@@ -1,0 +1,357 @@
+#!/usr/bin/perl
+# Nagios plugin to make an SSL (TLS) connection to a server and validate the
+# server's certificate
+#
+# Copyright (C) 2022 - Chris Adams <linux@cmadams.net>
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+# more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>. 
+
+
+use Modern::Perl qw(2013);
+use Monitoring::Plugin;
+use IO::Socket::SSL;
+use IO::Socket::SSL::Utils qw(CERT_asHash);
+use Socket;
+use POSIX qw(strftime);
+
+my $VERSION = "1.0";
+my %starttls = (
+    ftp =>  {port => "ftp",  mod => "Net::FTP"},
+    imap => {port => "imap", mod => "Mail::IMAPClient"},
+    ldap => {port => "ldap", mod => "Net::LDAP"},
+    pop3 => {port => "pop3", mod => "Net::POP3"},
+    smtp => {port => "smtp", mod => "Net::SMTP"},
+);
+my $starttls = join (" ", sort keys %starttls);
+my $starttlsmod = join ("\n  - ", map {$_ . ": " . $starttls{$_}{mod}}
+    sort keys %starttls);
+
+my $p = Monitoring::Plugin->new (
+    version => $VERSION,
+    timeout => 15,
+    license => "License: GPL-3.0-only - GNU General Public License v3.0 only",
+    blurb => <<~'EOF',
+	This plugin makes an SSL/TLS connection to the specified server/port,
+	validates the cert, and warns/errors on the number of days until the
+	cert expires. It can be set to check an RSA or ECDSA cert, and can check
+	some types of connections using STARTTLS.
+	EOF
+    usage => <<~'EOF',
+	Usage:
+	  check_cert -H <host> [-f <4|6>] [-w <warn days>] [-c <crit days>]
+	      [-s <SNI host>] [-n <verify host>] [-p <port>] [-a <rsa|ecdsa>]
+	      [-T <TLS version>] [-o] [--names] [-S <STARTTLS type>]
+	      [-V <verify scheme>] [-C <CA file>] [-A <CA path>] [-t <seconds>]
+	EOF
+    extra => <<~EOF,
+
+	Notes:
+	  STARTTLS connections require additional (protocol-specific) modules:
+	  - $starttlsmod
+	  Some STARTTLS modules don't entirely honor the timeout
+
+	Examples:
+	  Simple check to see if the cert is valid right now:
+	    check_cert -H www.example.com
+
+	  Also check the cert expiration, warning at 30 days and going
+	  critical at 14:
+	    check_cert -H www.example.com -w 30 -c 14
+
+	  Connect to a server and check a specific hostname (for servers with
+	  multiple hosts under SNI):
+	    check_cert -H server.example.com -s www.example.com
+	EOF
+);
+$p->add_arg (
+    spec => "hostname|H=s",
+    help => qq{-H, --hostname=HOST
+   Host name or IP address (must specify SNI/verify name if IP)});
+$p->add_arg (
+    spec => "family|f=i",
+    help => qq{-f, --family=<4|6>
+   Specify "4" or "6" to only use IPv4 or IPv6});
+$p->add_arg (
+    spec => "servername|s=s",
+    help => qq{-s, --servername=HOST
+   Specify an alternate SNI hostname (default is the same as -H)});
+$p->add_arg (
+    spec => "verifyname|n=s",
+    help => qq{-n, --verifyname=HOST
+   Specify an alternate hostname for check the cert (default is the same as -s)});
+$p->add_arg (
+    spec => "port|p=s",
+    help => qq{-p, --port=PORT
+   Specify the port name/number to connect to (default: https or protocoal
+   specific when using STARTTLS)});
+$p->add_arg (
+    spec => "alg|a=s",
+    help => qq{-a, --alg=<rsa|ecdsa|>
+   Specify which key algorithm to check (force the server to return a specific
+   cert when more than one type is available) - optionally just supply an
+   OpenSSL string});
+$p->add_arg (
+    spec => "tls|T=s",
+    help => qq{-T, --tls=STRING
+   Specify which version(s) of TLS to allow (default from OpenSSL)});
+$p->add_arg (
+    spec => "ocsp|o!",
+    help => qq{-o, --ocsp
+   Enable OCSP support});
+$p->add_arg (
+    spec => "names!",
+    default => 1,
+    help => qq{-n, --names
+   List the subjectAltNames in the output (default true, use --nonames to
+   disable)});
+$p->add_arg (
+    spec => "starttls|S=s",
+    help => qq{-S, --starttls=TYPE
+   Use STARTTLS rather than straight SSL (supports: $starttls)});
+$p->add_arg (
+    spec => "verifyscheme|V=s",
+    help => qq{-V, --verifyscheme=TYPE
+   Use specified name verification scheme (define http or set by STARTTLS)});
+$p->add_arg (
+    spec => "cafile|C=s",
+    help => qq{-C, --cafile=FILE
+   Use specified CA file for verification (rather than system default)});
+$p->add_arg (
+    spec => "capath|A=s",
+    help => qq{-A, --capath=PATH
+   Use specified CA path for verification (rather than system default)});
+$p->add_arg (
+    spec => "warn|w=i",
+    help => qq{-w, --warn=DAYS
+   Return warning if expiration is less than this many days away});
+$p->add_arg (
+    spec => "crit|c=i",
+    help => qq{-c, --crit=DAYS
+   Return critical if expiration is less than this many days away});
+$p->getopts;
+my $o = $p->opts;
+
+# Handle the options - build up a couple of option hashes (one for
+# SSL-spepcifc arguments and one for general socket arguments)
+die "No host specified\n" if (! $o->{hostname});
+my %ssl_args = (
+    SSL_verify_mode => SSL_VERIFY_PEER,
+    SSL_verifycn_name => $o->{verifyname} || $o->{servername} || $o->{hostname},
+    SSL_verifycn_scheme => "http",
+    SSL_hostname => $o->{servername} || $o->{hostname},
+);
+$IO::Socket::SSL::DEBUG = $o->{verbose};
+$ssl_args{SSL_version} = $o->{tls};
+if ($o->{ocsp}) {
+	$ssl_args{SSL_ocsp_mode} = SSL_OCSP_FULL_CHAIN | SSL_OCSP_FAIL_HARD;
+	$ssl_args{SSL_ocsp_cache} = IO::Socket::SSL::OCSP_Cache->new;
+} else {
+	$ssl_args{SSL_ocsp_mode} = SSL_OCSP_NO_STAPLE;
+}
+if (defined ($o->{alg})) {
+	my $type;
+	if ($o->{alg} eq "rsa") {
+		$type = "RSA-PSS+SHA512:RSA-PSS+SHA384:RSA-PSS+SHA256";
+	} elsif ($o->{alg} eq "ecdsa") {
+		$type = "ECDSA+SHA512:ECDSA+SHA384:ECDSA+SHA256";
+	} else {
+		# just take whatever was supplied and pass it through
+		$type = $o->{alg};
+	}
+	# Net::SSLeay doesn't include the SSL_CTX_set1_sigalgs_list() call
+	$ssl_args{SSL_create_ctx_callback} = sub {
+		my $ctx = shift;
+		# 98: SSL_CTRL_SET_SIGALGS_LIST
+		Net::SSLeay::CTX_ctrl ($ctx, 98, 0, $type)
+		    or die "can't set key algorithms\n";
+	};
+}
+$ssl_args{SSL_ca_file} = $o->{cafile};
+$ssl_args{SSL_ca_path} = $o->{capath};
+my $tls_mod;
+if (defined ($o->{starttls})) {
+	my $s = $starttls{$o->{starttls}};
+	die "Unknown STARTTLS type \"", $o->{starttls}, "\"\n" if (! $s);
+	eval "require $s->{mod}" if ($s->{mod});
+	$ssl_args{SSL_verifycn_scheme} = $o->{starttls};
+	$o->{port} //= $s->{port} if ($s->{port});
+	if ($o->{starttls} eq "smtp") {
+		$tls_mod = "Net::SMTP";
+	} elsif ($o->{starttls} eq "pop3") {
+		$tls_mod = "Net::POP3";
+	} elsif ($o->{starttls} eq "ftp") {
+		$tls_mod = "Net::FTP";
+	}
+}
+if ($o->{verifyscheme}) {
+	$ssl_args{SSL_verifycn_scheme} = $o->{verifyscheme};
+}
+
+my %sock_args = (
+    PeerAddr => $o->{hostname},
+    Proto => "tcp",
+    PeerPort => $o->{port} // "https",
+    # some protocol modules want it this way, doesn't hurt the others
+    Port => $o->{port} // "https",
+    Timeout => $o->{timeout},
+);
+$sock_args{Debug} = $o->{verbose};
+if (defined ($o->{family})) {
+	if ($o->{family} == 4) {
+		$sock_args{Family} = AF_INET;
+	} elsif ($o->{family} == 6) {
+		$sock_args{Family} = AF_INET6;
+	} else {
+		die "Invalid socket family ", $o->{family}, "\n";
+	}
+}
+
+# Do the actual connection and get the connection/cert info
+my ($peer, $vers, $exp, $days, $key_alg, @san);
+local $SIG{ALRM} = "IGNORE";
+eval {
+	local $SIG{ALRM} = sub {die "timeout\n"};
+	alarm ($o->{timeout});
+
+	# hold the SSL info
+	# some things need a ref held so put those in extra
+	my ($ssl, @extra);
+
+	if (! $o->{starttls}) {
+		$ssl = IO::Socket::SSL->new (%sock_args, %ssl_args);
+	} elsif ($tls_mod) {
+		# some Net::FOO modules work the same
+		$ssl = new $tls_mod ($o->{hostname}, %sock_args, %ssl_args)
+		    or die "connect: $!\n";
+		$ssl->starttls
+		    or die "STARTTLS: ", IO::Socket::SSL::errstr, "\n";
+	} elsif ($o->{starttls} eq "imap") {
+		my $imap = Mail::IMAPClient->new;
+		$imap->Timeout ($o->{timeout});
+		my %iarg = (
+		    Server => $o->{hostname},
+		    Port => $o->{port},
+		    Socketargs => [%sock_args],
+		    Starttls => [%ssl_args],
+		    Timeout => $o->{timeout},
+		    Debug => $o->{verbose},
+		);
+		my $res = $imap->connect (%iarg);
+		die "connect: ", $imap->LastError, "\n"
+		    if (! $res && ! $SSL_ERROR);
+		$ssl = $imap->Socket if ($res);
+		push @extra, $imap;
+	} elsif ($o->{starttls} eq "ldap") {
+		my %larg = (
+		    version => 3,
+		    port => $o->{port},
+		    scheme => "ldap",
+		    timeout => $o->{timeout},
+		    debug => $o->{verbose},
+		);
+		$larg{"inet" . $o->{family}} = 1 if ($o->{family});
+		my $ldap = Net::LDAP->new ($o->{hostname}, %larg)
+		    or die "connect: $!\n";
+		# Net::LDAP doesn't pass all the IO::Socket::SSL options
+		# we want, so monkey patch it in
+		local *Net::LDAP::_SSL_context_init_args = sub {
+			return %ssl_args;
+		};
+		$ldap->start_tls;
+		if (ref ($ssl = $ldap->socket) ne "IO::Socket::SSL") {
+			# If STARTTLS fails, Net::LDAP still has the socket,
+			# it's just not been upgraded; pretend it's dead
+			$ssl = undef;
+		}
+		push @extra, $ldap;
+	}
+	if (! $ssl) {
+		my $msg;
+		if ($!) {
+			$msg = "connect: $!";
+		} elsif ($SSL_ERROR) {
+			$msg = $SSL_ERROR;
+			# these messages are verbose
+			$msg =~ s/.*:/SSL error: /;
+		} elsif ($ssl) {
+			$msg = "SSL error";
+		} else {
+			$msg = "connect error";
+		}
+		die $msg, "\n";
+	}
+
+	# check OCSP chain
+	if ($o->{ocsp}) {
+		if (my $errors = $ssl->ocsp_resolver->resolve_blocking) {
+			die "OCSP: $errors\n";
+		}
+	}
+
+	# network should be done so don't have a trivial timeout here
+	alarm (0);
+
+	# gather some info to test/report
+	$peer = $ssl->peerhost or die "socket failure?\n";
+	$peer .= "/" . $ssl->peerport;
+	$vers = $ssl->get_sslversion or die "SSL failure?\n";
+	$vers =~ s/_/./g;
+	my $cert = CERT_asHash ($ssl->peer_certificate);
+	$exp = $cert->{not_after};
+	$days = ($exp - time) / 86400;
+	$key_alg = Net::SSLeay::OBJ_obj2txt (
+	    Net::SSLeay::P_X509_get_pubkey_alg ($ssl->peer_certificate));
+	if ($key_alg eq "id-ecPublicKey") {
+		$key_alg = "ECDSA";
+	} elsif ($key_alg eq "rsaEncryption") {
+		$key_alg = "RSA";
+	}
+	foreach my $n (@{$cert->{subjectAltNames}}) {
+		my ($t, $name) = @$n;
+		push @san, $name;
+	}
+};
+alarm (0);
+
+# Now figure out the result
+my ($res, $msg);
+if ($@) {
+	$res = CRITICAL;
+	$msg = $@;
+	chomp $msg;
+} elsif (! $exp) {
+	$res = CRITICAL;
+	$msg = "unknown error\n";
+} else {
+	$res = OK;
+	my %thr;
+	$thr{warning} = $o->{warn} . ":" if ($o->{warn});
+	$thr{critical} = $o->{crit} . ":" if ($o->{crit});
+	if (%thr) {
+		$p->set_thresholds (%thr);
+		$res = $p->check_threshold ($days);
+	}
+	$p->add_perfdata (
+	    label => "days_left",
+	    value => int ($days),
+	    uom => "d",
+	);
+	$msg = join (" ", "Expires", strftime ("%F %T %Z", localtime ($exp)),
+	    "(" . int ($days) . " days)",
+	    $peer, $vers, $key_alg);
+	$msg .= "; names=" . join (",", @san) if ($o->{names});
+}
+$p->plugin_exit (
+    return_code => $res,
+    message => $msg,
+);
