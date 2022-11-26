@@ -1,0 +1,211 @@
+#!/usr/bin/perl
+# Nagios plugin to check a chrony NTP server
+#
+# Copyright (C) 2022 - Chris Adams <linux@cmadams.net>
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+# more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>. 
+
+use Modern::Perl qw(2013);
+use Monitoring::Plugin;
+
+my $VERSION = "1.0";
+
+my $p = Monitoring::Plugin->new (
+    version => $VERSION,
+    license => "License: GPL-3.0-only - GNU General Public License v3.0 only",
+    blurb => <<~'EOF',
+	This plugin checks the selected chrony NTP server
+	EOF
+    usage => <<~'EOF',
+	Usage:
+	 check_chrony [-H <host>] [-4|-6] [-w <warn>] [-c <crit>]
+	       [-W <warn>] [-C <crit>] [-j <warn>] [-k <crit>] [-v verbose]
+	EOF
+    timeout => 10,
+    extra => <<~'EOF',
+
+	Notes:
+	 Use this plugin to check the health of a chrony NTP server. It supports
+	 checking the offset with the sync peer and the server's stratum. This
+	 plugin will not check the clock offset between the local host and NTP
+	 server; please use check_ntp_time for that purpose.
+
+	 See:
+	 https://www.nagios-plugins.org/doc/guidelines.html#THRESHOLDFORMAT
+	 for THRESHOLD format and examples.
+
+	Examples:
+	 Simple chrony NTP server check:
+	  check_chrony -H ntpserv -w 0.5 -c 1
+
+	 Only check the number of usable time sources ("truechimers"):
+	  check_chrony -H ntpserv -m @5 -n @3
+
+	 Check only stratum:
+	  check_chrony -H ntpserv -W 4 -C 6
+	EOF
+);
+$p->add_arg (
+    spec => "hostname|H=s",
+    help => qq{-H, --hostname=ADDRESS
+   Host name, IP Address, or unix socket (must be an absolute path); default
+   is the local system});
+$p->add_arg (
+    default => "chronyc",
+    spec => "chronyc-path|P=s",
+    help => qq{-P, --chronyc-path=PATH
+   Path to chronyc (default: chronyc)});
+$p->add_arg (
+    spec => "use-ipv4|4!",
+    help => qq{-4, --use-ipv4
+   Use IPv4 connection});
+$p->add_arg (
+    spec => "use-ipv6|6!",
+    help => qq{-6, --use-ipv6
+   Use IPv6 connection});
+$p->add_arg (
+    spec => "port|p=i",
+    help => qq{-p, --port=INTEGER
+   Port number});
+$p->add_arg (
+    spec => "quiet|q!",
+    help => qq{-q, --quiet
+   Returns UNKNOWN instead of CRITICAL or WARNING if server isn't synchronized});
+$p->add_arg (
+    spec => "warning|w=s",
+    help => qq{-w, --warning=THRESHOLD
+   Offset to result in warning status (seconds)});
+$p->add_arg (
+    spec => "critical|c=s",
+    help => qq{-c, --critical=THRESHOLD
+   Offset to result in critical status (seconds)});
+$p->add_arg (
+    spec => "swarn|W=s",
+    help => qq{-W, --swarn=THRESHOLD
+   Warning threshold for stratum of server});
+$p->add_arg (
+    spec => "scrit|C=s",
+    help => qq{-C, --scrit=THRESHOLD
+   Critical threshold for stratum of server});
+$p->add_arg (
+    spec => "twarn|m=s",
+    help => qq{-m, --twarn=THRESHOLD
+   Warning threshold for number of usable time sources ("truechimers")});
+$p->add_arg (
+    spec => "tcrit|n=s",
+    help => qq{-n, --tcrit=THRESHOLD
+   Critical threshold for number of usable time sources ("truechimers")});
+$p->getopts;
+
+my @cmd = ($p->opts->{"chronyc-path"}, "-n", "-m");
+if ($p->opts->{"hostname"}) {
+	push @cmd, "-h", $p->opts->{"hostname"};
+	if ($p->opts->{"use-ipv4"}) {
+		die "Can't do both IPv4 and IPv6\n" if ($p->opts->{"use-ipv6"});
+		push @cmd, "-4";
+	} elsif ($p->opts->{"use-ipv6"}) {
+		push @cmd, "-6";
+	}
+	push @cmd, "-p", $p->opts->{"port"} if ($p->opts->{"port"});
+}
+
+# Fetch the status by calling out to chronyc
+my ($pid, $cc, %cc, $sources, %sources, $new);
+eval {
+	local $SIG{"ALRM"} = sub {die "timed out\n"};
+	alarm ($p->opts->timeout);
+
+	no warnings qw(exec);
+	$pid = open ($cc, "-|", @cmd, "tracking", "sources") ||
+	    die "open($cmd[0]): $!\n";
+	while (<$cc>) {
+		chomp;
+		if (/^MS Name/) {
+			$new = 1;
+			last;
+		} elsif (/^210 Number of sources = (\d+)/) {
+			$sources = $1;
+			last;
+		}
+		if (my ($tag, $val) = $_ =~ /^(.+?)\s*:\s*(.*)/) {
+			$cc{$tag} = $val;
+		} else {
+			die "Invalid response: $_\n";
+		}
+	}
+	if (! $new) {
+		my $skip = <$cc>;
+		$skip = <$cc>;
+	}
+	while (<$cc>) {
+		my ($flags, $source, $stratum, $rest) = split (/\s+/);
+		$sources{$source} = {flags => $flags, stratum => $stratum};
+		$sources ++ if ($new);
+	}
+	close ($cc);
+	$pid = undef;
+};
+alarm (0);
+if ($pid) {
+	kill (9, $pid);
+	close ($cc);
+}
+
+my ($res, $msg);
+if ($@) {
+	$res = CRITICAL;
+	$msg = $@;
+	chomp $msg;
+} elsif (! defined ($sources)) {
+	$res = CRITICAL;
+	$msg = "timeout\n";
+} else {
+	my (@check, @msg);
+
+	my $offset = $cc{"Last offset"};
+	$offset =~ s/ seconds$//;
+	$offset =~ s/^\+//;
+	push @msg, "Offset " . $offset . " secs";
+	push @check, ["offset", $offset, "s",
+	    $p->opts->{"warning"}, $p->opts->{"critical"}];
+
+	push @check, ["stratum", $cc{"Stratum"}, "",
+	    $p->opts->{"swarn"}, $p->opts->{"scrit"}];
+	push @msg, "stratum " . $cc{"Stratum"};
+
+	my $true = 0;
+	foreach my $source (keys %sources) {
+		$true ++ if ($sources{$source}{"flags"} =~ /[+*-]/);
+	}
+	push @msg, "truechimers " . $true;
+	push @check, ["truechimers", $true, "",
+	    $p->opts->{"twarn"}, $p->opts->{"tcrit"}];
+
+	$res = OK;
+	$msg = join (", ", @msg);
+	foreach my $check (@check) {
+		my ($label, $val, $unit, $warn, $crit) = @$check;
+		$p->set_thresholds (warning => $warn, critical => $crit);
+		$p->add_perfdata (label => $label, value => $val, uom => $unit,
+		    threshold => $p->threshold);
+		my $r = $p->check_threshold ($val);
+		if ($r > $res) {
+			$res = $r;
+			last if ($res == CRITICAL);
+		}
+	}
+}
+$p->plugin_exit (
+    return_code => $res,
+    message => $msg,
+);

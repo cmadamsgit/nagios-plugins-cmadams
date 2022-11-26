@@ -10,6 +10,9 @@ These are some useful Nagios monitoring plugins I've written.
 	cert expires. It can be set to check an RSA or ECDSA cert, and can check
 	some types of connections using STARTTLS.
 
+* check_chrony: 
+	This plugin checks the selected chrony NTP server
+
 ## License
 
 This project is licensed under the GNU General Public License (v3.0 only).
