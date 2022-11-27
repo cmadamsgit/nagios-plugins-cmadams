@@ -13,6 +13,10 @@ These are some useful Nagios monitoring plugins I've written.
 * check_chrony: 
 	This plugin checks the selected chrony NTP server
 
+## Notes
+
+These plugins need at least perl 5.26.
+
 ## License
 
 This project is licensed under the GNU General Public License (v3.0 only).
