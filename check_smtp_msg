@@ -1,0 +1,216 @@
+#!/usr/bin/perl
+
+# Nagios plugin to check an SMTP server by sending a message
+
+use Modern::Perl qw(2018);
+use Monitoring::Plugin;
+use Net::SMTP;
+use Time::HiRes;
+use Sys::Hostname;
+use Socket;
+use POSIX qw(strftime);
+
+my $VERSION = "1.0";
+
+my $p = Monitoring::Plugin->new (
+    version => $VERSION,
+    timeout => 15,
+    license => "License: GPL-3.0-only - GNU General Public License v3.0 only",
+    blurb => <<~'EOF',
+	This plugin makes a connection to an SMTP server, sends a message, and
+	checks the result.
+	EOF
+    usage => <<~'EOF',
+	Usage:
+	    check_smtp_msg -H <host> -F <from> -T <to> [-P <port>] [-v] [-t <timeout>]
+		[-u <user> -p <password>] [-h <helo host>] [-s] [-t] [-S <SNI host>]
+		[-n] [-N <verify host>] [-f <4|6>]
+	EOF
+    extra => <<~'EOF',
+
+	Notes:
+	  The generated message has a "X-Test-Stamp" header with the epoch time that
+	  the message was sent (useful for checking delay if it is delivered to a
+	  mailbox)
+
+	  Example:
+	    check_smtp_msg -H mail.example.com -F user@example.com -T user@example.com
+	EOF
+);
+$p->add_arg (
+    spec => "hostname|H=s",
+    required => 1,
+    help => qq{-H, --hostname=HOST
+   Host name or IP address of SMTP server});
+$p->add_arg (
+    spec => "port|P=s",
+    default => "smtp",
+    help => qq{-P, --port=PORT
+   Specify the port name/number to connect to (default: smtp)});
+$p->add_arg (
+    spec => "from|F=s",
+    required => 1,
+    help => qq{-F, --from=ADDRESS
+   Email address to use as From});
+$p->add_arg (
+    spec => "to|T=s",
+    required => 1,
+    help => qq{-T, --to=ADDRESS
+   Email address to use a To});
+$p->add_arg (
+    spec => "user|u=s",
+    help => qq{-u, --user=USER
+   Use authentication to send, username for auth (--password also required)});
+$p->add_arg (
+    spec => "password|p=s",
+    help => qq{-p, --password=PASSWORD
+   Use authentication to send, password for auth (--user also required)});
+$p->add_arg (
+    spec => "helo|h=s",
+    default => hostname,
+    help => qq{-h, --helo=HOST
+   Specify the hostname to use in HELO/EHLO (default: this host's name)});
+$p->add_arg (
+    spec => "ssl|s!",
+    help => qq{-s, --ssl
+   Use SSL wrapped connection});
+$p->add_arg (
+    spec => "starttls|t!",
+    help => qq{-t, --starttls
+   Use STARTTLS on the connection});
+$p->add_arg (
+    spec => "snihost|S=s",
+    help => qq{-s, --snihost=HOST
+   Specify an alternate SNI hostname (default is the same as -H)});
+$p->add_arg (
+    spec => "nameverify|n!",
+    default => 1,
+    help => qq{-n, --nameverify
+   Verify the SSL/STARTTLS hostname (default on, use --nonameverify to disable)});
+$p->add_arg (
+    spec => "verifyname|N=s",
+    help => qq{-N, --verifyname=HOST
+   Specify an alternate hostname for check the cert (default is the same as -s)});
+$p->add_arg (
+    spec => "family|f=i",
+    help => qq{-f, --family=<4|6>
+   Specify "4" or "6" to only use IPv4 or IPv6});
+$p->getopts;
+my $o = $p->opts;
+
+my ($out, $took);
+eval {
+	# Check options
+	my %extra;
+	if ($o->{family}) {
+		if ($o->{family} == 4) {
+			$extra{Family} = AF_INET;
+		} elsif ($o->{family} == 6) {
+			$extra{Family} = AF_INET6;
+		} else {
+			die "Invalid socket family ", $o->{family}, "\n";
+		}
+	}
+	if ($o->{user} // $o->{password}) {
+		die "AUTH requires username\n" if (! defined ($o->{user}));
+		die "AUTH requires password\n" if (! defined ($o->{password}));
+		# Only load the necessary module for SMTP AUTH if requested
+		eval {
+			require Authen::SASL;
+			import Authen::SASL;
+		};
+		die "SMTP AUTH requires module Authen::SASL\n" if ($@);
+	}
+	if ($o->{ssl} || $o->{starttls}) {
+		die "Can't use SSL-wrapped and STARTTLS together\n"
+		    if ($o->{ssl} && $o->{starttls});
+		# Only load the necessary module for SSL if requested
+		eval {
+			require IO::Socket::SSL;
+			import IO::Socket::SSL;
+		};
+		die "SSL/STARTTLS requires module IO::Socket::SSL;\n" if ($@);
+		%extra = (%extra,
+		    SSL => $o->{ssl},
+		    SSL_hostname => $o->{snihost} || $o->{hostname},
+		    # SSL_VERIFY_NONE=0 but older Net::SMTP does ||=
+		    # and overwrites it
+		    SSL_verify_mode => $o->{nameverify} ? IO::Socket::SSL::SSL_VERIFY_PEER : "0E0",
+		    SSL_verifycn_name => $o->{verifyname} || $o->{snihost} || $o->{hostname},
+		);
+	}
+
+	# Build a message
+	my $now = time;
+	my $snow = strftime ("%Y-%m-%d %H:%M:%S", localtime ($now));
+	(my $ssnow = $snow) =~ s/[^0-9]/./g;
+	my $dnow = strftime ("%a, %_d %b %Y %T %z", localtime ($now));
+	my $data = <<~EOF;
+	From: $o->{from}
+	To: $o->{to}
+	Date: $dnow
+	Subject: SMTP test at $snow
+	Message-ID: <$ssnow-$now-$o->{from}>
+	X-Test-Stamp: $now
+
+	SMTP test at $snow
+	EOF
+
+	# Send it
+	my $start = Time::HiRes::time;
+	my $smtp = Net::SMTP->new ($o->{hostname},
+	    Port => $o->{port},
+	    Hello => $o->{helo},
+	    Timeout => $o->{timeout},
+	    Debug => $o->{verbose},
+	    %extra,
+	) or die "connect ", $o->{hostname}, ": ", $! || "timeout", "\n";
+	$IO::Socket::SSL::DEBUG = $o->{verbose};
+
+	# make Net::SMTP error messages a little better
+	sub serr
+	{
+		my @m = @_;
+		my $m = $smtp->message || "timeout";
+		$m =~ s/.*\n(.+?)\n$/$1/s;
+		die @m, ": ", $m, "\n";
+	}
+
+	if ($o->{starttls}) {
+		$smtp->starttls or serr ("starttls " . IO::Socket::SSL::errstr);
+	}
+	if ($o->{user}) {
+		$smtp->auth ($o->{user}, $o->{password}) or serr ("auth");
+	}
+	$smtp->mail ($o->{from}) or serr ("mail from:<$o->{from}>");
+	$smtp->to ($o->{to}) or serr ("rcpt to:<$o->{to}>");
+	$smtp->data or serr ("data");
+	$smtp->datasend ($data) or serr ("send message");
+	$smtp->dataend or serr ("data end");
+	$out = $smtp->message;
+	$smtp->quit;
+	$took = Time::HiRes::time - $start;
+};
+
+my ($res, $msg);
+if ($@) {
+	$res = CRITICAL;
+	$msg = $@;
+	chomp $msg;
+} elsif (! $out) {
+	$res = CRITICAL;
+	$msg = "unknown error";
+} else {
+	$res = OK;
+	($msg = $out) =~ s/.*\n(.+?)\n$/$1/s;
+	$p->add_perfdata (
+	    label => "time",
+	    value => int ($took * 1000),
+	    uom => "ms",
+	);
+}
+$msg =~ s/\r//g;
+$p->plugin_exit (
+    return_code => $res,
+    message => $msg,
+);

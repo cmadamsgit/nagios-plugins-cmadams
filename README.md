@@ -13,6 +13,10 @@ These are some useful Nagios monitoring plugins I've written.
 * check_chrony: 
 	This plugin checks the selected chrony NTP server
 
+* check_smtp_msg:
+	This plugin makes a connection to an SMTP server, sends a message, and
+	checks the result.
+
 ## Notes
 
 These plugins need at least perl 5.26.
