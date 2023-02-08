@@ -40,6 +40,10 @@ my $p = Monitoring::Plugin->new (
 	 plugin will not check the clock offset between the local host and NTP
 	 server; please use check_ntp_time for that purpose.
 
+	 The chrony server must be configured to allow commands from the monitoring
+	 server with "cmdallow <IP or subnet>" in chrony.conf (by default, only
+	 localhost is allowed).
+
 	 See:
 	 https://www.nagios-plugins.org/doc/guidelines.html#THRESHOLDFORMAT
 	 for THRESHOLD format and examples.
