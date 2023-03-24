@@ -17,7 +17,7 @@
 # this program. If not, see <https://www.gnu.org/licenses/>. 
 
 
-use Modern::Perl qw(2018);
+use Modern::Perl qw(2013);
 use Monitoring::Plugin;
 use IO::Socket::SSL;
 use IO::Socket::SSL::Utils qw(CERT_asHash);
@@ -40,38 +40,38 @@ my $p = Monitoring::Plugin->new (
     version => $VERSION,
     timeout => 15,
     license => "License: GPL-3.0-only - GNU General Public License v3.0 only",
-    blurb => <<~'EOF',
-	This plugin makes an SSL/TLS connection to the specified server/port,
-	validates the cert, and warns/errors on the number of days until the
-	cert expires. It can be set to check an RSA or ECDSA cert, and can check
-	some types of connections using STARTTLS.
-	EOF
-    usage => <<~'EOF',
-	Usage:
-	  check_cert -H <host> [-f <4|6>] [-w <warn days>] [-c <crit days>]
-	      [-s <SNI host>] [-n <verify host>] [-p <port>] [-a <rsa|ecdsa>]
-	      [-T <TLS version>] [-o] [--names] [-S <STARTTLS type>]
-	      [-V <verify scheme>] [-C <CA file>] [-A <CA path>] [-t <seconds>]
-	EOF
-    extra => <<~EOF,
+    blurb => <<'EOF',
+This plugin makes an SSL/TLS connection to the specified server/port,
+validates the cert, and warns/errors on the number of days until the
+cert expires. It can be set to check an RSA or ECDSA cert, and can check
+some types of connections using STARTTLS.
+EOF
+    usage => <<'EOF',
+Usage:
+  check_cert -H <host> [-f <4|6>] [-w <warn days>] [-c <crit days>]
+      [-s <SNI host>] [-n <verify host>] [-p <port>] [-a <rsa|ecdsa>]
+      [-T <TLS version>] [-o] [--names] [-S <STARTTLS type>]
+      [-V <verify scheme>] [-C <CA file>] [-A <CA path>] [-t <seconds>]
+EOF
+    extra => <<EOF,
 
-	Notes:
-	  STARTTLS connections require additional (protocol-specific) modules:
-	  - $starttlsmod
-	  Some STARTTLS modules don't entirely honor the timeout
+Notes:
+  STARTTLS connections require additional (protocol-specific) modules:
+  - $starttlsmod
+  Some STARTTLS modules don't entirely honor the timeout
 
-	Examples:
-	  Simple check to see if the cert is valid right now:
-	    check_cert -H www.example.com
+Examples:
+  Simple check to see if the cert is valid right now:
+    check_cert -H www.example.com
 
-	  Also check the cert expiration, warning at 30 days and going
-	  critical at 14:
-	    check_cert -H www.example.com -w 30 -c 14
+  Also check the cert expiration, warning at 30 days and going
+  critical at 14:
+    check_cert -H www.example.com -w 30 -c 14
 
-	  Connect to a server and check a specific hostname (for servers with
-	  multiple hosts under SNI):
-	    check_cert -H server.example.com -s www.example.com
-	EOF
+  Connect to a server and check a specific hostname (for servers with
+  multiple hosts under SNI):
+    check_cert -H server.example.com -s www.example.com
+EOF
 );
 $p->add_arg (
     spec => "hostname|H=s",

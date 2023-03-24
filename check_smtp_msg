@@ -16,7 +16,7 @@
 # this program. If not, see <https://www.gnu.org/licenses/>. 
 
 
-use Modern::Perl qw(2018);
+use Modern::Perl qw(2013);
 use Monitoring::Plugin;
 use Net::SMTP;
 use Time::HiRes;
@@ -30,26 +30,26 @@ my $p = Monitoring::Plugin->new (
     version => $VERSION,
     timeout => 15,
     license => "License: GPL-3.0-only - GNU General Public License v3.0 only",
-    blurb => <<~'EOF',
-	This plugin makes a connection to an SMTP server, sends a message, and
-	checks the result.
-	EOF
-    usage => <<~'EOF',
-	Usage:
-	    check_smtp_msg -H <host> -F <from> -T <to> [-P <port>] [-v] [-t <timeout>]
-		[-u <user> -p <password>] [-h <helo host>] [-s] [-t] [-S <SNI host>]
-		[-n] [-N <verify host>] [-f <4|6>]
-	EOF
-    extra => <<~'EOF',
+    blurb => <<'EOF',
+This plugin makes a connection to an SMTP server, sends a message, and
+checks the result.
+EOF
+    usage => <<'EOF',
+Usage:
+    check_smtp_msg -H <host> -F <from> -T <to> [-P <port>] [-v] [-t <timeout>]
+	[-u <user> -p <password>] [-h <helo host>] [-s] [-t] [-S <SNI host>]
+	[-n] [-N <verify host>] [-f <4|6>]
+EOF
+    extra => <<'EOF',
 
-	Notes:
-	  The generated message has a "X-Test-Stamp" header with the epoch time that
-	  the message was sent (useful for checking delay if it is delivered to a
-	  mailbox)
+Notes:
+  The generated message has a "X-Test-Stamp" header with the epoch time that
+  the message was sent (useful for checking delay if it is delivered to a
+  mailbox)
 
-	  Example:
-	    check_smtp_msg -H mail.example.com -F user@example.com -T user@example.com
-	EOF
+  Example:
+    check_smtp_msg -H mail.example.com -F user@example.com -T user@example.com
+EOF
 );
 $p->add_arg (
     spec => "hostname|H=s",

@@ -54,7 +54,7 @@ These are some useful Nagios monitoring plugins I've written.
 
 ## Notes
 
-These plugins need at least perl 5.26.
+These plugins need at least perl 5.16.
 
 ## License
 
