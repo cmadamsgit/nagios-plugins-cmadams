@@ -17,7 +17,8 @@
 # this program. If not, see <https://www.gnu.org/licenses/>. 
 
 
-use Modern::Perl qw(2013);
+use warnings;
+use strict;
 use Monitoring::Plugin;
 use IO::Socket::SSL;
 use IO::Socket::SSL::Utils qw(CERT_asHash);

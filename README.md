@@ -11,7 +11,6 @@ These are some useful Nagios monitoring plugins I've written.
     some types of connections using STARTTLS.
 
     Required perl modules:
-    - Modern::Perl
     - Monitoring::Plugin
     - IO::Socket::SSL
     - Socket
@@ -30,7 +29,6 @@ These are some useful Nagios monitoring plugins I've written.
     "chronyc" command line client.
 
     Required perl modules:
-    - Modern::Perl
     - Monitoring::Plugin
 
 
@@ -39,7 +37,6 @@ These are some useful Nagios monitoring plugins I've written.
     checks the result.
 
     Required perl modules:
-    - Modern::Perl
     - Monitoring::Plugin
     - Net::SMTP
     - Time::HiRes
