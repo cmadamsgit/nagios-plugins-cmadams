@@ -51,7 +51,7 @@ my $p = Monitoring::Plugin->new (
 	  check_cert -H <host> [-f <4|6>] [-w <warn days>] [-c <crit days>]
 	      [-s <SNI host>] [-n <verify host>] [-p <port>] [-a <rsa|ecdsa>]
 	      [-T <TLS version>] [-o] [--names] [-S <STARTTLS type>]
-	      [-V <verify scheme>] [-C <CA file>] [-A <CA path>] [-t <seconds>]
+	      [-E <verify scheme>] [-C <CA file>] [-A <CA path>] [-t <seconds>]
 	EOF
     extra => <<~EOF,
 
@@ -119,8 +119,8 @@ $p->add_arg (
     help => qq{-S, --starttls=TYPE
    Use STARTTLS rather than straight SSL (supports: $starttls)});
 $p->add_arg (
-    spec => "verifyscheme|V=s",
-    help => qq{-V, --verifyscheme=TYPE
+    spec => "verifyscheme|E=s",
+    help => qq{-E, --verifyscheme=TYPE
    Use specified name verification scheme (define http or set by STARTTLS)});
 $p->add_arg (
     spec => "cafile|C=s",

@@ -37,7 +37,7 @@ my $p = Monitoring::Plugin->new (
     usage => <<~'EOF',
 	Usage:
 	    check_smtp_msg -H <host> -F <from> -T <to> [-P <port>] [-v] [-t <timeout>]
-		[-u <user> -p <password>] [-h <helo host>] [-s] [-t] [-S <SNI host>]
+		[-u <user> -p <password>] [-e <helo host>] [-s] [-E] [-S <SNI host>]
 		[-n] [-N <verify host>] [-f <4|6>]
 	EOF
     extra => <<~'EOF',
@@ -80,17 +80,17 @@ $p->add_arg (
     help => qq{-p, --password=PASSWORD
    Use authentication to send, password for auth (--user also required)});
 $p->add_arg (
-    spec => "helo|h=s",
+    spec => "helo|e=s",
     default => hostname,
-    help => qq{-h, --helo=HOST
+    help => qq{-e, --helo=HOST
    Specify the hostname to use in HELO/EHLO (default: this host's name)});
 $p->add_arg (
     spec => "ssl|s!",
     help => qq{-s, --ssl
    Use SSL wrapped connection});
 $p->add_arg (
-    spec => "starttls|t!",
-    help => qq{-t, --starttls
+    spec => "starttls|E!",
+    help => qq{-E, --starttls
    Use STARTTLS on the connection});
 $p->add_arg (
     spec => "snihost|S=s",
