@@ -144,11 +144,13 @@ my $o = $p->opts;
 # Handle the options - build up a couple of option hashes (one for
 # SSL-spepcifc arguments and one for general socket arguments)
 die "No host specified\n" if (! $o->{hostname});
+our $SSL_ERROR_EXT;
 my %ssl_args = (
     SSL_verify_mode => SSL_VERIFY_PEER,
     SSL_verifycn_name => $o->{verifyname} || $o->{servername} || $o->{hostname},
     SSL_verifycn_scheme => "http",
     SSL_hostname => $o->{servername} || $o->{hostname},
+    SSL_error_trap => \&ssl_error,
 );
 $IO::Socket::SSL::DEBUG = $o->{verbose};
 $ssl_args{SSL_version} = $o->{tls};
@@ -279,6 +281,8 @@ eval {
 		my $msg;
 		if ($!) {
 			$msg = "connect: $!";
+		} elsif ($SSL_ERROR_EXT) {
+			$msg = $SSL_ERROR_EXT;
 		} elsif ($SSL_ERROR) {
 			$msg = $SSL_ERROR;
 			# these messages are verbose
@@ -355,3 +359,21 @@ $p->plugin_exit (
     return_code => $res,
     message => $msg,
 );
+
+
+# catch the SSL error before the OpenSSL object is destroyed to get
+# better error messages
+sub ssl_error
+{
+	my $ssl = shift;
+	my $err = shift;
+
+	if (my $obj = $ssl->_get_ssl_object) {
+		if (my $verify = Net::SSLeay::get_verify_result ($obj)) {
+			my $msg = Net::SSLeay::X509_verify_cert_error_string ($verify);
+			$msg //= "code " . $verify;
+			$SSL_ERROR_EXT = "SSL verification error: " . $msg;
+		}
+	}
+	$ssl->close;
+}
