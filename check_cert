@@ -92,7 +92,7 @@ $p->add_arg (
 $p->add_arg (
     spec => "port|p=s",
     help => qq{-p, --port=PORT
-   Specify the port name/number to connect to (default: https or protocoal
+   Specify the port name/number to connect to (default: https or protocol
    specific when using STARTTLS)});
 $p->add_arg (
     spec => "alg|a=s",
