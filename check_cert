@@ -150,7 +150,7 @@ my %ssl_args = (
     SSL_verifycn_name => $o->{verifyname} || $o->{servername} || $o->{hostname},
     SSL_verifycn_scheme => "http",
     SSL_hostname => $o->{servername} || $o->{hostname},
-    SSL_error_trap => \&ssl_error,
+    SSL_verify_callback => \&ssl_verify,
 );
 $IO::Socket::SSL::DEBUG = $o->{verbose};
 $ssl_args{SSL_version} = $o->{tls};
@@ -361,19 +361,32 @@ $p->plugin_exit (
 );
 
 
-# catch the SSL error before the OpenSSL object is destroyed to get
-# better error messages
-sub ssl_error
+# catch SSL verification error(s) to get better error messages
+sub ssl_verify
 {
-	my $ssl = shift;
-	my $err = shift;
+	my $ok = shift;
+	my $x509_store_ctx = shift;
+	return $ok if ($ok == 1);
 
-	if (my $obj = $ssl->_get_ssl_object) {
-		if (my $verify = Net::SSLeay::get_verify_result ($obj)) {
-			my $msg = Net::SSLeay::X509_verify_cert_error_string ($verify);
-			$msg //= "code " . $verify;
-			$SSL_ERROR_EXT = "SSL verification error: " . $msg;
-		}
+	my $c = Net::SSLeay::X509_STORE_CTX_get_current_cert ($x509_store_ctx);
+	my $crt = CERT_asHash ($c);
+	my $errn = Net::SSLeay::X509_STORE_CTX_get_error ($x509_store_ctx);
+	my $err = Net::SSLeay::X509_verify_cert_error_string ($errn) // $errn;
+	my $depth = Net::SSLeay::X509_STORE_CTX_get_error_depth ($x509_store_ctx);
+	if ($errn == 10) {
+		$err .= strftime (" (%F %T %Z)", localtime ($crt->{not_after}));
 	}
-	$ssl->close;
+
+	my $msg;
+	$msg = "Chain \"" if ($depth);
+	$msg .= $crt->{subject}->{commonName};
+	$msg .= "\"" if ($depth);
+	$msg .= " " . $err;
+	if ($SSL_ERROR_EXT) {
+		$SSL_ERROR_EXT = $msg . "," . $SSL_ERROR_EXT;
+	} else {
+		$SSL_ERROR_EXT = $msg;
+	}
+
+	return $ok;
 }
